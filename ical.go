@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/teambition/rrule-go"
 )
 
 // MIME type and file extension for iCal, defined in RFC 5545 section 8.1.
@@ -18,8 +20,18 @@ const (
 	Extension = "ics"
 )
 
+const (
+	dateFormat        = "20060102"
+	datetimeFormat    = "20060102T150405"
+	datetimeUTCFormat = "20060102T150405Z"
+)
+
 // Params is a set of property parameters.
 type Params map[string][]string
+
+func (params Params) Values(name string) []string {
+	return params[strings.ToUpper(name)]
+}
 
 func (params Params) Get(name string) string {
 	if values := params[strings.ToUpper(name)]; len(values) > 0 {
@@ -110,57 +122,56 @@ func (prop *Prop) Bool() (bool, error) {
 
 // DateTime parses the property value as a date-time or a date.
 func (prop *Prop) DateTime(loc *time.Location) (time.Time, error) {
-	// Use the TZID location, if available, otherwise the given location.
-	// Default to UTC, if there is no TZID or given location.
-	if tzid := prop.Params.Get(PropTimezoneID); tzid != "" {
-		tzLoc, err := time.LoadLocation(tzid)
-		if err != nil {
-			return time.Time{}, err
-		}
-		loc = tzLoc
-	}
+	// Default to UTC, if there is no given location.
 	if loc == nil {
 		loc = time.UTC
 	}
 
-	const (
-		dateFormat        = "20060102"
-		datetimeFormat    = "20060102T150405"
-		datetimeUTCFormat = "20060102T150405Z"
-	)
-
 	valueType := prop.ValueType()
 	valueLength := len(prop.Value)
+	if valueType == ValueDefault {
+		switch valueLength {
+		case len(dateFormat):
+			valueType = ValueDate
+		case len(datetimeFormat), len(datetimeUTCFormat):
+			valueType = ValueDateTime
+		}
+	}
+
 	switch valueType {
 	case ValueDate:
 		return time.ParseInLocation(dateFormat, prop.Value, loc)
 	case ValueDateTime:
-		if valueLength == len(datetimeFormat) {
-			return time.ParseInLocation(datetimeFormat, prop.Value, loc)
-		}
-		return time.ParseInLocation(datetimeUTCFormat, prop.Value, time.UTC)
-	case ValueDefault:
-		switch valueLength {
-		case len(dateFormat):
-			return time.ParseInLocation(dateFormat, prop.Value, loc)
-		case len(datetimeFormat):
-			return time.ParseInLocation(datetimeFormat, prop.Value, loc)
-		case len(datetimeUTCFormat):
+		if valueLength == len(datetimeUTCFormat) {
 			return time.ParseInLocation(datetimeUTCFormat, prop.Value, time.UTC)
 		}
+		// Use the TZID location, if available.
+		if tzid := prop.Params.Get(PropTimezoneID); tzid != "" {
+			tzLoc, err := time.LoadLocation(tzid)
+			if err != nil {
+				return time.Time{}, err
+			}
+			loc = tzLoc
+		}
+		return time.ParseInLocation(datetimeFormat, prop.Value, loc)
 	}
 
 	return time.Time{}, fmt.Errorf("ical: cannot process: (%q) %s", valueType, prop.Value)
+}
+
+func (prop *Prop) SetDate(t time.Time) {
+	prop.SetValueType(ValueDate)
+	prop.Value = t.Format(dateFormat)
 }
 
 func (prop *Prop) SetDateTime(t time.Time) {
 	prop.SetValueType(ValueDateTime)
 	switch t.Location() {
 	case nil, time.UTC:
-		prop.Value = t.Format("20060102T150405Z")
+		prop.Value = t.Format(datetimeUTCFormat)
 	default:
 		prop.Params.Set(PropTimezoneID, t.Location().String())
-		prop.Value = t.Format("20060102T150405")
+		prop.Value = t.Format(datetimeFormat)
 	}
 }
 
@@ -383,10 +394,14 @@ func (prop *Prop) SetURI(u *url.URL) {
 	prop.Value = u.String()
 }
 
-// TODO: Period, RecurrenceRule, Time, URI, UTCOffset
+// TODO: Period, Time, UTCOffset
 
 // Props is a set of component properties.
 type Props map[string][]Prop
+
+func (props Props) Values(name string) []Prop {
+	return props[strings.ToUpper(name)]
+}
 
 func (props Props) Get(name string) *Prop {
 	if l := props[strings.ToUpper(name)]; len(l) > 0 {
@@ -427,10 +442,79 @@ func (props Props) DateTime(name string, loc *time.Location) (time.Time, error) 
 	return time.Time{}, nil
 }
 
+func (props Props) SetDate(name string, t time.Time) {
+	prop := NewProp(name)
+	prop.SetDate(t)
+	props.Set(prop)
+}
+
 func (props Props) SetDateTime(name string, t time.Time) {
 	prop := NewProp(name)
 	prop.SetDateTime(t)
 	props.Set(prop)
+}
+
+func (props Props) SetURI(name string, u *url.URL) {
+	prop := NewProp(name)
+	prop.SetURI(u)
+	props.Set(prop)
+}
+
+func (props Props) URI(name string) (*url.URL, error) {
+	if prop := props.Get(name); prop != nil {
+		return prop.URI()
+	}
+	return nil, nil
+}
+
+// Returns an ROption based on the events RRULE.
+//
+// This object can then be used to construct `RRule` instances for different
+// fields, for example, an rrule based on `DTSTART`:
+//
+//	roption, err := props.RecurrenceRule()
+//	if err != nil {
+//		log.Fatalf("error parsing rrule:", err)
+//	}
+//	if roption == nil {
+//		log.Fatalf("props have no RRULE")
+//	}
+//
+//	dtstart, err := props.DateTime("DTSTART", nil)
+//	if err != nil {
+//		log.Fatalf("error parsing dtstart:", err)
+//	}
+//	roption.Dtstart = dtstart
+//
+//	return rrule.NewRRule(*roption)
+//
+// This object can then be used to calculate the `DTSTART` of all recurrances.
+func (props Props) RecurrenceRule() (*rrule.ROption, error) {
+	prop := props.Get(PropRecurrenceRule)
+	if prop == nil {
+		return nil, nil
+	}
+	if err := prop.expectValueType(ValueRecurrence); err != nil {
+		return nil, err
+	}
+
+	roption, err := rrule.StrToROption(prop.Value)
+	if err != nil {
+		return nil, fmt.Errorf("ical: error parsing rrule: %v", err)
+	}
+
+	return roption, nil
+}
+
+func (props Props) SetRecurrenceRule(rule *rrule.ROption) {
+	if rule != nil {
+		prop := NewProp(PropRecurrenceRule)
+		prop.SetValueType(ValueRecurrence)
+		prop.Value = rule.RRuleString()
+		props.Set(prop)
+	} else {
+		props.Del(PropRecurrenceRule)
+	}
 }
 
 // Component is an iCalendar component: collections of properties that express

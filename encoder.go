@@ -17,7 +17,16 @@ func checkComponent(comp *Component) error {
 		}
 
 		exactlyOneProps = []string{PropProductID, PropVersion}
-		atMostOneProps = []string{PropCalendarScale, PropMethod}
+		atMostOneProps = []string{
+			PropCalendarScale,
+			PropMethod,
+			PropUID,
+			PropLastModified,
+			PropURL,
+			PropRefreshInterval,
+			PropSource,
+			PropColor,
+		}
 	case CompEvent:
 		for _, child := range comp.Children {
 			if child.Name != CompAlarm {
@@ -36,6 +45,7 @@ func checkComponent(comp *Component) error {
 			PropLocation,
 			PropOrganizer,
 			PropPriority,
+			PropRecurrenceRule,
 			PropSequence,
 			PropStatus,
 			PropSummary,
@@ -44,6 +54,7 @@ func checkComponent(comp *Component) error {
 			PropRecurrenceID,
 			PropDateTimeEnd,
 			PropDuration,
+			PropColor,
 		}
 
 		// TODO: DTSTART is required if VCALENDAR is missing the METHOD prop
@@ -77,6 +88,7 @@ func checkComponent(comp *Component) error {
 			PropURL,
 			PropDue,
 			PropDuration,
+			PropColor,
 		}
 
 		if len(comp.Props[PropDue]) > 0 && len(comp.Props[PropDuration]) > 0 {
@@ -98,6 +110,7 @@ func checkComponent(comp *Component) error {
 			PropStatus,
 			PropSummary,
 			PropURL,
+			PropColor,
 		}
 
 		if len(comp.Children) > 0 {

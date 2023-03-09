@@ -1,9 +1,13 @@
 package ical
 
 import (
+	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/teambition/rrule-go"
 )
 
 func toCRLF(s string) string {
@@ -21,6 +25,7 @@ DTEND:19960920T220000Z
 DTSTAMP:19960704T120000Z
 DTSTART:19960918T143000Z
 ORGANIZER:mailto:jsmith@example.com
+RRULE:FREQ=YEARLY;BYDAY=3SU;BYMONTH=3
 STATUS:CONFIRMED
 SUMMARY;FOO=bar,"b:az":Networld+Interop Conference
 UID:uid1@example.com
@@ -55,6 +60,11 @@ var exampleCalendar = &Calendar{&Component{
 					Name:   "UID",
 					Params: Params{},
 					Value:  "uid1@example.com",
+				}},
+				"RRULE": []Prop{{
+					Name:   "RRULE",
+					Params: Params{},
+					Value:  "FREQ=YEARLY;BYDAY=3SU;BYMONTH=3",
 				}},
 				"ORGANIZER": []Prop{{
 					Name:   "ORGANIZER",
@@ -143,10 +153,10 @@ func TestCalendar(t *testing.T) {
 	}
 }
 
-func TestGetDate(b *testing.T) {
+func TestGetDate(t *testing.T) {
 	localTimezone, err := time.LoadLocation("Europe/Paris")
 	if err != nil {
-		b.Fatal(err)
+		t.Fatal(err)
 	}
 
 	testCases := []struct {
@@ -203,7 +213,7 @@ func TestGetDate(b *testing.T) {
 			ValueType:    ValueDate,
 			TZID:         "Europe/Paris",
 			Location:     nil,
-			ExpectedDate: time.Date(2020, time.September, 23, 0, 0, 0, 0, localTimezone),
+			ExpectedDate: time.Date(2020, time.September, 23, 0, 0, 0, 0, time.UTC),
 		},
 		{
 			Alias:        "date-nil-local",
@@ -223,9 +233,8 @@ func TestGetDate(b *testing.T) {
 		},
 	}
 
-	//nolint:scopelint
 	for _, tCase := range testCases {
-		testFn := func(t *testing.T) {
+		t.Run(tCase.Alias, func(t *testing.T) {
 			p := NewProp("FakeProp")
 			p.Value = tCase.Value
 			p.SetValueType(tCase.ValueType)
@@ -239,15 +248,56 @@ func TestGetDate(b *testing.T) {
 			if got, want := value, tCase.ExpectedDate; value.String() != tCase.ExpectedDate.String() {
 				t.Errorf("bad date: %s, expected: %s", got, want)
 			}
-		}
-		b.Run(tCase.Alias, testFn)
+		})
 	}
 }
 
-func TestSetDate(b *testing.T) {
+func TestSetDate(t *testing.T) {
 	localTimezone, err := time.LoadLocation("Europe/Paris")
 	if err != nil {
-		b.Fatal(err)
+		t.Fatal(err)
+	}
+
+	testCases := []struct {
+		Alias        string
+		Date         time.Time
+		ExpectedDate string
+	}{
+		{
+			Alias:        "UTC",
+			Date:         time.Date(2020, time.September, 20, 0, 0, 0, 0, time.UTC),
+			ExpectedDate: "20200920",
+		},
+		{
+			Alias:        "local",
+			Date:         time.Date(2020, time.September, 20, 0, 0, 0, 0, localTimezone),
+			ExpectedDate: "20200920",
+		},
+		{
+			Alias:        "non_zero_time",
+			Date:         time.Date(2020, time.September, 20, 17, 7, 0, 0, localTimezone),
+			ExpectedDate: "20200920",
+		},
+	}
+
+	for _, tCase := range testCases {
+		t.Run(tCase.Alias, func(t *testing.T) {
+			p := NewProp("FakeProp")
+			p.SetDate(tCase.Date)
+			if got, want := p.Value, tCase.ExpectedDate; got != want {
+				t.Errorf("bad date: %s, expected: %s", got, want)
+			}
+			if got, want := p.Params.Get(PropTimezoneID), ""; got != want {
+				t.Errorf("bad tzid: %s, expected: %s", got, want)
+			}
+		})
+	}
+}
+
+func TestSetDateTime(t *testing.T) {
+	localTimezone, err := time.LoadLocation("Europe/Paris")
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	testCases := []struct {
@@ -270,9 +320,8 @@ func TestSetDate(b *testing.T) {
 		},
 	}
 
-	//nolint:scopelint
 	for _, tCase := range testCases {
-		testFn := func(t *testing.T) {
+		t.Run(tCase.Alias, func(t *testing.T) {
 			p := NewProp("FakeProp")
 			p.SetDateTime(tCase.Date)
 			if got, want := p.Params.Get(PropTimezoneID), tCase.ExpectedTZID; got != want {
@@ -281,7 +330,102 @@ func TestSetDate(b *testing.T) {
 			if got, want := p.Value, tCase.ExpectedDate; got != want {
 				t.Errorf("bad date: %s, expected: %s", got, want)
 			}
-		}
-		b.Run(tCase.Alias, testFn)
+		})
+	}
+}
+
+func TestRoundtripURI(t *testing.T) {
+	testCases := []struct {
+		Alias    string
+		Expected string
+	}{
+		{
+			Alias:    "empty_url",
+			Expected: "",
+		},
+		{
+			Alias:    "scheme_and_port",
+			Expected: "https://google.com:8080",
+		},
+	}
+
+	for _, tCase := range testCases {
+		t.Run(tCase.Alias, func(t *testing.T) {
+			ue, err := url.Parse(tCase.Expected)
+			if err != nil {
+				t.Fatalf("%#v", err)
+			}
+			probs := make(Props)
+			probs.SetURI("asdf", ue)
+			ug, err := probs.URI("asdf")
+			if err != nil {
+				t.Errorf("%#v", err)
+			}
+			if got, want := ug.String(), ue.String(); got != want {
+				t.Errorf("bad url: %s, expected: %s", got, want)
+			}
+		})
+	}
+}
+
+func TestRecurrenceRule(t *testing.T) {
+	events := exampleCalendar.Events()
+	if len(events) != 1 {
+		t.Fatalf("len(Calendar.Events()) = %v, want 1", len(events))
+	}
+	props := events[0].Props
+
+	wantRecurrenceRule := &rrule.ROption{
+		Freq:      rrule.YEARLY,
+		Bymonth:   []int{3},
+		Byweekday: []rrule.Weekday{rrule.SU.Nth(3)},
+	}
+	if roption, err := props.RecurrenceRule(); err != nil {
+		t.Errorf("Props.RecurrenceRule() = %v", err)
+	} else if !reflect.DeepEqual(roption, wantRecurrenceRule) {
+		t.Errorf("Props.RecurrenceRule() = %v, want %v", roption, wantRecurrenceRule)
+	}
+}
+
+func TestRecurrenceRuleIsAbsent(t *testing.T) {
+	props := Props{}
+
+	roption, err := props.RecurrenceRule()
+	if roption != nil || err != nil {
+		t.Errorf("Props.RecurrenceRule() = %v, %v, want nil, nil", roption, err)
+	}
+}
+
+func TestRecurrenceRuleSetToNil(t *testing.T) {
+	props := Props{
+		"RRULE": []Prop{{
+			Name:   "RRULE",
+			Params: Params{},
+			Value:  "FREQ=YEARLY;BYDAY=3SU;BYMONTH=3",
+		}},
+	}
+
+	props.SetRecurrenceRule(nil)
+
+	roption, err := props.RecurrenceRule()
+	if roption != nil || err != nil {
+		t.Errorf("Props.RecurrenceRule() = %v, %v, want nil, nil", roption, err)
+	}
+}
+
+func TestRecurrenceRuleRoundTrip(t *testing.T) {
+	recurrenceRule := &rrule.ROption{
+		Freq:      rrule.YEARLY,
+		Bymonth:   []int{3},
+		Byweekday: []rrule.Weekday{rrule.SU.Nth(3)},
+	}
+
+	props := Props{}
+	props.SetRecurrenceRule(recurrenceRule)
+
+	if roption, err := props.RecurrenceRule(); err != nil {
+		t.Errorf("Props.RecurrenceRule() = %v", err)
+	} else if !reflect.DeepEqual(roption, recurrenceRule) {
+		t.Errorf("Props.RecurrenceRule() = %v, want %v", roption, recurrenceRule)
 	}
 }

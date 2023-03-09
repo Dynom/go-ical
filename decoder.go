@@ -2,7 +2,6 @@ package ical
 
 import (
 	"bufio"
-	"bytes"
 	"fmt"
 	"io"
 	"strings"
@@ -138,12 +137,23 @@ func NewDecoder(r io.Reader) *Decoder {
 }
 
 func (dec *Decoder) readLine() ([]byte, error) {
-	b, err := dec.br.ReadSlice('\n')
-	b = bytes.TrimRight(b, "\r\n")
-	if err == io.EOF && len(b) > 0 {
-		err = nil
+	var buf []byte
+	for {
+		line, isPrefix, err := dec.br.ReadLine()
+		if err != nil {
+			return nil, err
+		}
+
+		if !isPrefix && len(buf) == 0 {
+			return line, err
+		}
+
+		buf = append(buf, line...)
+		if !isPrefix {
+			break
+		}
 	}
-	return b, err
+	return buf, nil
 }
 
 func (dec *Decoder) readContinuedLine() (string, error) {
@@ -249,6 +259,8 @@ func (dec *Decoder) Decode() (*Calendar, error) {
 	comp, err := dec.decodeComponent()
 	if err != nil {
 		return nil, err
+	} else if comp.Name != CompCalendar {
+		return nil, fmt.Errorf("ical: invalid toplevel component name: expected %q, got %q", CompCalendar, comp.Name)
 	}
 
 	return &Calendar{comp}, nil
